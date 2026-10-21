@@ -41,10 +41,12 @@ matrix = rgbmatrix.RGBMatrix(
     output_enable_pin=board.MTX_OE,
 )
 display = framebufferio.FramebufferDisplay(matrix, auto_refresh=True)
-pixels = displayio.Bitmap(64, 32, 2)
-palette = displayio.Palette(2)
+pixels = displayio.Bitmap(64, 32, 256)
+palette = displayio.Palette(256)
 palette[0] = 0x000000
 palette[1] = 0xFFFFFF
+color_indices = {0xFFFFFF: 1}
+next_color_index = 2
 group = displayio.Group()
 group.append(displayio.TileGrid(pixels, pixel_shader=palette))
 display.show(group)
@@ -63,6 +65,7 @@ PORT = 80
 
 
 def web_app(environ, start_response):
+    global next_color_index
     method = environ["REQUEST_METHOD"]
     path = environ["PATH_INFO"]
 
@@ -71,16 +74,32 @@ def web_app(environ, start_response):
             form = {}
             for item in environ["wsgi.input"].read().split("&"):
                 key, value = item.split("=", 1)
-                form[key] = int(value)
-            x = form["x"]
-            y = form["y"]
+                form[key] = value
+            x = int(form["x"])
+            y = int(form["y"])
+            color_text = form.get("color", "FFFFFF")
+            if len(color_text) != 6 or any(
+                character not in "0123456789abcdefABCDEF"
+                for character in color_text
+            ):
+                raise ValueError
+            color = int(color_text, 16)
         except (KeyError, ValueError):
             start_response("400 Bad Request", [("Content-Type", "text/plain")])
-            return ["Invalid pixel coordinates"]
+            return ["Invalid pixel coordinates or color"]
         if not 0 <= x < 64 or not 0 <= y < 32:
             start_response("400 Bad Request", [("Content-Type", "text/plain")])
             return ["Pixel coordinates out of range"]
-        pixels[x, y] = 1
+        color_index = color_indices.get(color)
+        if color_index is None:
+            if next_color_index >= 256:
+                start_response("400 Bad Request", [("Content-Type", "text/plain")])
+                return ["Color palette is full"]
+            color_index = next_color_index
+            next_color_index += 1
+            color_indices[color] = color_index
+            palette[color_index] = color
+        pixels[x, y] = color_index
         start_response("200 OK", [("Content-Type", "text/plain")])
         return ["OK"]
 

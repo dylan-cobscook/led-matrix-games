@@ -8,16 +8,39 @@
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
     canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+    .toolbar {
+      position: fixed;
+      z-index: 1;
+      top: 16px;
+      left: 50%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      color: #fff;
+      background: rgba(25, 25, 25, 0.9);
+      border: 1px solid #555;
+      border-radius: 999px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      font: 500 14px system-ui, sans-serif;
+      transform: translateX(-50%);
+    }
+    .toolbar input { width: 36px; height: 28px; padding: 0; border: 0; background: none; cursor: pointer; }
   </style>
 </head>
 <body>
+  <header class="toolbar">
+    <label for="pixel-color">Pixel color</label>
+    <input id="pixel-color" type="color" value="#ffffff" aria-label="Choose pixel color">
+  </header>
   <canvas id="grid" aria-label="64 by 32 LED pixel grid"></canvas>
   <script>
     const columns = 64;
     const rows = 32;
     const canvas = document.getElementById("grid");
     const context = canvas.getContext("2d");
-    const litPixels = new Set();
+    const colorPicker = document.getElementById("pixel-color");
+    const litPixels = new Map();
 
     function drawGrid() {
       const ratio = window.devicePixelRatio || 1;
@@ -31,9 +54,9 @@
 
       const cellWidth = width / columns;
       const cellHeight = height / rows;
-      context.fillStyle = "#fff";
-      for (const pixel of litPixels) {
+      for (const [pixel, color] of litPixels) {
         const [x, y] = pixel.split(",").map(Number);
+        context.fillStyle = color;
         context.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
       }
 
@@ -58,17 +81,18 @@
       const x = Math.floor((event.clientX - bounds.left) / bounds.width * columns);
       const y = Math.floor((event.clientY - bounds.top) / bounds.height * rows);
       if (x < 0 || x >= columns || y < 0 || y >= rows) return;
+      const color = colorPicker.value;
 
       const response = await fetch("/pixel", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: `x=${x}&y=${y}`
+        body: `x=${x}&y=${y}&color=${color.slice(1)}`
       });
       if (!response.ok) {
         console.error("Could not light matrix pixel:", response.status);
         return;
       }
-      litPixels.add(`${x},${y}`);
+      litPixels.set(`${x},${y}`, color);
       drawGrid();
     });
 

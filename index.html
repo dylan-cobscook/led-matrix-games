@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- Page metadata tells the browser how to display this page. -->
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Matrix Portal Pixel Grid</title>
+  <!-- CSS controls the full-screen canvas and the floating color-picker bar. -->
   <style>
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
@@ -29,20 +31,27 @@
   </style>
 </head>
 <body>
+  <!-- The toolbar lets you choose a color for the next pixel you click. -->
   <header class="toolbar">
     <label for="pixel-color">Pixel color</label>
     <input id="pixel-color" type="color" value="#ffffff" aria-label="Choose pixel color">
   </header>
+  <!-- JavaScript draws the interactive LED grid inside this canvas. -->
   <canvas id="grid" aria-label="64 by 32 LED pixel grid"></canvas>
   <script>
+    // The grid matches the physical LED matrix: 64 columns by 32 rows.
     const columns = 64;
     const rows = 32;
     const canvas = document.getElementById("grid");
     const context = canvas.getContext("2d");
     const colorPicker = document.getElementById("pixel-color");
+    // Store only lit cells, using "x,y" as the key and a color as the value.
     const litPixels = new Map();
+    let lastSnapshot = null;
 
+    // Paint the background, colored cells, and grid lines onto the canvas.
     function drawGrid() {
+      // Scale the drawing for sharp lines on high-resolution screens.
       const ratio = window.devicePixelRatio || 1;
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
@@ -54,6 +63,7 @@
 
       const cellWidth = width / columns;
       const cellHeight = height / rows;
+      // Convert each saved cell's grid position into its on-screen position.
       for (const [pixel, color] of litPixels) {
         const [x, y] = pixel.split(",").map(Number);
         context.fillStyle = color;
@@ -76,6 +86,43 @@
       context.stroke();
     }
 
+    // Ask the device for its current pixels so changes on the matrix appear here.
+    async function syncPixels() {
+      try {
+        const response = await fetch("/pixels", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`Could not load matrix pixels: ${response.status}`);
+        }
+
+        const snapshot = await response.text();
+        // Each cell takes six characters: a color code or dashes for a dark cell.
+        if (snapshot.length !== columns * rows * 6) {
+          throw new Error("Received an invalid matrix pixel snapshot");
+        }
+        // Redraw only when the device reports a different set of pixels.
+        if (snapshot !== lastSnapshot) {
+          litPixels.clear();
+          for (let y = 0; y < rows; y++) {
+            for (let x = 0; x < columns; x++) {
+              const offset = (y * columns + x) * 6;
+              const pixel = snapshot.slice(offset, offset + 6);
+              if (pixel !== "------") {
+                litPixels.set(`${x},${y}`, `#${pixel}`);
+              }
+            }
+          }
+          lastSnapshot = snapshot;
+          drawGrid();
+        }
+      } catch (error) {
+        console.error("Could not sync matrix pixels:", error);
+      } finally {
+        // Try again in one second, even if this request failed.
+        window.setTimeout(syncPixels, 1000);
+      }
+    }
+
+    // Convert a click's screen position to a grid cell and send it to the device.
     canvas.addEventListener("pointerdown", async (event) => {
       const bounds = canvas.getBoundingClientRect();
       const x = Math.floor((event.clientX - bounds.left) / bounds.width * columns);
@@ -83,6 +130,7 @@
       if (x < 0 || x >= columns || y < 0 || y >= rows) return;
       const color = colorPicker.value;
 
+      // POST sends the selected cell and color to the device's /pixel handler.
       const response = await fetch("/pixel", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -96,8 +144,10 @@
       drawGrid();
     });
 
+    // Redraw to fit the screen when its size changes; then draw and sync initially.
     window.addEventListener("resize", drawGrid);
     drawGrid();
+    syncPixels();
   </script>
 </body>
 </html>

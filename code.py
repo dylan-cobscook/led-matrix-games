@@ -1,5 +1,8 @@
+# Standard library modules used for delays and the Wi-Fi credentials.
 import time
 import secrets
+
+# CircuitPython libraries for the board, LED matrix, and ESP32 Wi-Fi adapter.
 import board
 import busio
 import displayio
@@ -9,14 +12,16 @@ from digitalio import DigitalInOut
 from adafruit_esp32spi import adafruit_esp32spi
 from adafruit_esp32spi import adafruit_esp32spi_wsgiserver
 
+# These pins connect the ESP32 Wi-Fi module to the board.
 esp32_cs = DigitalInOut(board.ESP_CS)
 esp32_ready = DigitalInOut(board.ESP_BUSY)
 esp32_reset = DigitalInOut(board.ESP_RESET)
 
+# Create the SPI connection used to communicate with the Wi-Fi module.
 spi = busio.SPI(board.SCK, board.MOSI, board.MISO)
 esp = adafruit_esp32spi.ESP_SPIcontrol(spi, esp32_cs, esp32_ready, esp32_reset)
 
-# Initialize the 64x32 RGB matrix.
+# Set up the physical 64-by-32 RGB matrix and its drawing buffer.
 displayio.release_displays()
 matrix = rgbmatrix.RGBMatrix(
     width=64,
@@ -51,7 +56,7 @@ group = displayio.Group()
 group.append(displayio.TileGrid(pixels, pixel_shader=palette))
 display.show(group)
 
-# Connect to WiFi
+# Keep trying to connect until the Wi-Fi module joins the configured network.
 print("Connecting to WiFi...")
 while not esp.is_connected:
     try:
@@ -64,13 +69,16 @@ while not esp.is_connected:
 PORT = 80
 
 
+# Handle each HTTP request from the browser and return a response.
 def web_app(environ, start_response):
     global next_color_index
     method = environ["REQUEST_METHOD"]
     path = environ["PATH_INFO"]
 
+    # The browser sends a POST request here when someone clicks a grid cell.
     if method == "POST" and path == "/pixel":
         try:
+            # Read the form fields and turn the coordinates and color into numbers.
             form = {}
             for item in environ["wsgi.input"].read().split("&"):
                 key, value = item.split("=", 1)
@@ -103,6 +111,29 @@ def web_app(environ, start_response):
         start_response("200 OK", [("Content-Type", "text/plain")])
         return ["OK"]
 
+    # Return the whole display as text so the browser can keep its view in sync.
+    if method == "GET" and path == "/pixels":
+        rows_state = []
+        for y in range(32):
+            rows_state.append(
+                "".join(
+                    # Empty cells use dashes; lit cells use a six-digit hex color.
+                    "------"
+                    if pixels[x, y] == 0
+                    else "%06x" % palette[pixels[x, y]]
+                    for x in range(64)
+                )
+            )
+        start_response(
+            "200 OK",
+            [
+                ("Content-Type", "text/plain"),
+                ("Cache-Control", "no-store"),
+            ],
+        )
+        return ["".join(rows_state)]
+
+    # Serve the web page when the browser opens the device's main address.
     if method == "GET" and path == "/":
         with open("index.html", "r") as html_file:
             html = html_file.read()
@@ -113,6 +144,7 @@ def web_app(environ, start_response):
     return ["Not found"]
 
 
+# Start the web server on the Wi-Fi interface.
 adafruit_esp32spi_wsgiserver.set_interface(esp)
 server = adafruit_esp32spi_wsgiserver.WSGIServer(
     port=PORT, application=web_app
@@ -124,6 +156,7 @@ print(
     % (esp.pretty_ip(esp.ip_address), PORT)
 )
 
+# Keep checking for incoming browser requests. Briefly pause after socket errors.
 while True:
     try:
         server.update_poll()

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Matrix Portal Pixel Grid</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  </style>
+</head>
+<body>
+  <canvas id="grid" aria-label="64 by 32 LED pixel grid"></canvas>
+  <script>
+    const columns = 64;
+    const rows = 32;
+    const canvas = document.getElementById("grid");
+    const context = canvas.getContext("2d");
+    const litPixels = new Set();
+
+    function drawGrid() {
+      const ratio = window.devicePixelRatio || 1;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.fillStyle = "#111";
+      context.fillRect(0, 0, width, height);
+
+      const cellWidth = width / columns;
+      const cellHeight = height / rows;
+      context.fillStyle = "#fff";
+      for (const pixel of litPixels) {
+        const [x, y] = pixel.split(",").map(Number);
+        context.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
+      }
+
+      context.strokeStyle = "#666";
+      context.lineWidth = 1;
+      context.beginPath();
+      for (let x = 0; x <= columns; x++) {
+        const lineX = Math.round(x * cellWidth) + 0.5;
+        context.moveTo(lineX, 0);
+        context.lineTo(lineX, height);
+      }
+      for (let y = 0; y <= rows; y++) {
+        const lineY = Math.round(y * cellHeight) + 0.5;
+        context.moveTo(0, lineY);
+        context.lineTo(width, lineY);
+      }
+      context.stroke();
+    }
+
+    canvas.addEventListener("pointerdown", async (event) => {
+      const bounds = canvas.getBoundingClientRect();
+      const x = Math.floor((event.clientX - bounds.left) / bounds.width * columns);
+      const y = Math.floor((event.clientY - bounds.top) / bounds.height * rows);
+      if (x < 0 || x >= columns || y < 0 || y >= rows) return;
+
+      const response = await fetch("/pixel", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `x=${x}&y=${y}`
+      });
+      if (!response.ok) {
+        console.error("Could not light matrix pixel:", response.status);
+        return;
+      }
+      litPixels.add(`${x},${y}`);
+      drawGrid();
+    });
+
+    window.addEventListener("resize", drawGrid);
+    drawGrid();
+  </script>
+</body>
+</html>

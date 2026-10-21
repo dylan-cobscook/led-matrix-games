@@ -26,7 +26,7 @@ displayio.release_displays()
 matrix = rgbmatrix.RGBMatrix(
     width=64,
     height=32,
-    bit_depth=1,
+    bit_depth=6,
     rgb_pins=[
         board.MTX_R1,
         board.MTX_G1,
@@ -108,6 +108,8 @@ def web_app(environ, start_response):
             color_indices[color] = color_index
             palette[color_index] = color
         pixels[x, y] = color_index
+        client_ip = environ.get("REMOTE_ADDR", "unknown")
+        print("%s drew %d/%d #%06X" % (client_ip, x, y, color))
         start_response("200 OK", [("Content-Type", "text/plain")])
         return ["OK"]
 

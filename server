@@ -2,8 +2,8 @@ import time
 import socket
 import wifi
 
-WIFI_SSID = "YOUR_WIFI_SSID"
-WIFI_PASSWORD = "YOUR_WIFI_PASSWORD"
+WIFI_SSID = "Cobscook Sharing"
+WIFI_PASSWORD = "CBsharing23"
 
 
 def connect_wifi():

@@ -1,13 +1,10 @@
 import time
+import secrets
 import board
 import busio
 from digitalio import DigitalInOut
 from adafruit_esp32spi import adafruit_esp32spi
 from adafruit_esp32spi import adafruit_esp32spi_wsgiserver
-
-WIFI_SSID = "Cobscook Sharing"
-WIFI_PASSWORD = "CBsharing23"
-
 
 esp32_cs = DigitalInOut(board.ESP_CS)
 esp32_ready = DigitalInOut(board.ESP_BUSY)
@@ -20,7 +17,7 @@ esp = adafruit_esp32spi.ESP_SPIcontrol(spi, esp32_cs, esp32_ready, esp32_reset)
 print("Connecting to WiFi...")
 while not esp.is_connected:
     try:
-        esp.connect_AP(WIFI_SSID, WIFI_PASSWORD)
+        esp.connect_AP(secrets.secrets["ssid"], secrets.secrets["password"])
     except RuntimeError:
         continue
 

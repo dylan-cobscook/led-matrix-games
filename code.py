@@ -97,6 +97,17 @@ def handle_home(request):
     )
 
 
+# Serve the browser code separately to keep each response small for the device.
+def handle_app_js(request):
+    with open("app.js", "r") as js_file:
+        javascript = js_file.read()
+    return Response(
+        request,
+        javascript,
+        content_type="application/javascript; charset=utf-8",
+    )
+
+
 # Apply a pixel edit submitted by the browser.
 def handle_pixel(request):
     global next_color_index, pixel_version
@@ -105,6 +116,9 @@ def handle_pixel(request):
         x = int(form["x"])
         y = int(form["y"])
         color_text = form.get("color", "FFFFFF")
+        name = form.get("name", "Anonymous")
+        if not isinstance(name, str):
+            raise ValueError
         if len(color_text) != 6 or any(
             character not in "0123456789abcdefABCDEF"
             for character in color_text
@@ -123,6 +137,13 @@ def handle_pixel(request):
             "Pixel coordinates out of range",
             (400, "Bad Request"),
         )
+    name = "".join(
+        character
+        for character in name
+        if ord(character) >= 32 and ord(character) != 127
+    ).strip()[:32]
+    if not name:
+        name = "Anonymous"
     color_index = color_indices.get(color)
     if color_index is None:
         if next_color_index >= 256:
@@ -145,7 +166,7 @@ def handle_pixel(request):
             # Older clients will receive a fresh snapshot if their changes expire.
             del pixel_updates[0]
     client_ip = request.client_address[0]
-    print("%s drew %d/%d #%06X" % (client_ip, x, y, color))
+    print("%s at %s drew %dx%d #%06X" % (name, client_ip, x, y, color))
     return make_response(request, "OK")
 
 
@@ -226,6 +247,7 @@ def create_server():
     new_server.add_routes(
         [
             Route("/", GET, handle_home),
+            Route("/app.js", GET, handle_app_js),
             Route("/pixel", POST, handle_pixel),
             Route("/pixel-row", GET, handle_pixel_row),
             Route("/pixels", GET, handle_pixel_row),

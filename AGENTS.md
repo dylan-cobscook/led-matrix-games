@@ -4,7 +4,7 @@
 
 - This is a CircuitPython project for an Adafruit Matrix Portal (ATSAMD51J19 with an ESP32 Wi-Fi co-processor) driving a 64×32 RGB LED matrix.
 - `code.py` is the device firmware. It configures the SPI Wi-Fi connection and matrix display, then serves the browser app over HTTP. Its `/pixel` route accepts edits, `/pixel-row?y=` returns one snapshot row, and `/updates` returns a snapshot marker or versioned changes.
-- `index.html` is a self-contained browser client. Its canvas mirrors the 64×32 matrix; its JavaScript draws pixels, posts edits, and polls for updates.
+- `index.html` and `app.js` are the browser client. The device serves them separately to keep each response small; the canvas mirrors the 64×32 matrix, while the JavaScript draws pixels, posts edits, and polls for updates.
 - `secrets.py` supplies the Wi-Fi credentials used by the firmware. Keep credentials private and do not commit them.
 - The repository has no application subdirectories, dependency manifest, CI configuration, or test suite. `README.md` currently contains only a placeholder.
 

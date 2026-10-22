@@ -74,19 +74,14 @@ pixel_version = 0
 pixel_updates = []
 
 
-def get_pixel_snapshot():
+def get_pixel_row(y):
     # Encode each cell as six hex characters, or dashes when the cell is dark.
-    rows_state = []
-    for y in range(32):
-        rows_state.append(
-            "".join(
-                "------"
-                if pixels[x, y] == 0
-                else "%06x" % palette[pixels[x, y]]
-                for x in range(64)
-            )
-        )
-    return "".join(rows_state)
+    return "".join(
+        "------"
+        if pixels[x, y] == 0
+        else "%06x" % palette[pixels[x, y]]
+        for x in range(64)
+    )
 
 
 # Handle each HTTP request from the browser and return a response.
@@ -141,8 +136,19 @@ def web_app(environ, start_response):
         start_response("200 OK", [("Content-Type", "text/plain")])
         return ["OK"]
 
-    # Return the whole display as text so the browser can keep its view in sync.
-    if method == "GET" and path == "/pixels":
+    # Send one row at a time so snapshot responses stay small on the device.
+    if method == "GET" and path in ("/pixel-row", "/pixels"):
+        try:
+            key, value = environ.get("QUERY_STRING", "").split("=", 1)
+            if key != "y":
+                raise ValueError
+            y = int(value)
+        except ValueError:
+            start_response("400 Bad Request", [("Content-Type", "text/plain")])
+            return ["Invalid pixel row"]
+        if not 0 <= y < 32:
+            start_response("400 Bad Request", [("Content-Type", "text/plain")])
+            return ["Pixel row out of range"]
         start_response(
             "200 OK",
             [
@@ -150,7 +156,7 @@ def web_app(environ, start_response):
                 ("Cache-Control", "no-store"),
             ],
         )
-        return [get_pixel_snapshot()]
+        return [get_pixel_row(y)]
 
     # Return only pixel changes since the client's last update version.
     if method == "GET" and path == "/updates":
@@ -178,8 +184,8 @@ def web_app(environ, start_response):
             )
         )
         if needs_snapshot:
-            # The header carries the version represented by this complete snapshot.
-            body = "full:%d\n%s" % (pixel_version, get_pixel_snapshot())
+            # The browser fetches each row separately to limit peak memory use.
+            body = "full:%d\n" % pixel_version
         else:
             # Delta lines contain one changed pixel each: x,y,six-digit-color.
             updates = ["delta:%d\n" % pixel_version]

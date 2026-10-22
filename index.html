@@ -115,20 +115,35 @@
         const payload = update.slice(headerEnd + 1);
         let redraw = false;
         if (mode === "full") {
-          // A full response replaces local state; a delta only updates changed cells.
-          // Each cell takes six characters: a color code or dashes for a dark cell.
-          if (payload.length !== columns * rows * 6) {
+          // Fetch rows separately to keep each response small for the device.
+          if (payload) {
             throw new Error("Received an invalid matrix pixel snapshot");
           }
-          litPixels.clear();
+          const snapshotPixels = new Map();
           for (let y = 0; y < rows; y++) {
+            const rowResponse = await fetch(`/pixel-row?y=${y}`, {
+              cache: "no-store"
+            });
+            if (!rowResponse.ok) {
+              throw new Error(`Could not load matrix pixel row: ${rowResponse.status}`);
+            }
+            const row = await rowResponse.text();
+            if (row.length !== columns * 6) {
+              throw new Error("Received an invalid matrix pixel row");
+            }
             for (let x = 0; x < columns; x++) {
-              const offset = (y * columns + x) * 6;
-              const pixel = payload.slice(offset, offset + 6);
-              if (pixel !== "------") {
-                litPixels.set(`${x},${y}`, `#${pixel}`);
+              const color = row.slice(x * 6, (x + 1) * 6);
+              if (color !== "------") {
+                if (!/^[0-9a-f]{6}$/i.test(color)) {
+                  throw new Error("Received an invalid matrix pixel color");
+                }
+                snapshotPixels.set(`${x},${y}`, `#${color}`);
               }
             }
+          }
+          litPixels.clear();
+          for (const [pixel, color] of snapshotPixels) {
+            litPixels.set(pixel, color);
           }
           redraw = true;
         } else if (payload) {

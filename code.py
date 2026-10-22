@@ -11,7 +11,15 @@ import rgbmatrix
 from digitalio import DigitalInOut
 from adafruit_esp32spi import adafruit_esp32spi
 from adafruit_esp32spi.socketpool import SocketPool
-from adafruit_httpserver import GET, POST, Response, Route, Server
+from adafruit_httpserver import (
+    GET,
+    POST,
+    ChunkedResponse,
+    FileResponse,
+    Response,
+    Route,
+    Server,
+)
 
 # These pins connect the ESP32 Wi-Fi module to the board.
 esp32_cs = DigitalInOut(board.ESP_CS)
@@ -88,22 +96,20 @@ def make_response(request, body, status=(200, "OK"), headers=None):
 
 # Serve the browser application from the device filesystem.
 def handle_home(request):
-    with open("index.html", "r") as html_file:
-        html = html_file.read()
-    return Response(
+    return FileResponse(
         request,
-        html,
+        filename="index.html",
+        root_path="/",
         content_type="text/html; charset=utf-8",
     )
 
 
 # Serve the browser code separately to keep each response small for the device.
 def handle_app_js(request):
-    with open("app.js", "r") as js_file:
-        javascript = js_file.read()
-    return Response(
+    return FileResponse(
         request,
-        javascript,
+        filename="app.js",
+        root_path="/",
         content_type="application/javascript; charset=utf-8",
     )
 
@@ -196,6 +202,23 @@ def handle_pixel_row(request):
     )
 
 
+# Stream a full matrix snapshot a row at a time to keep memory use bounded.
+def handle_pixel_snapshot(request):
+    snapshot_version = pixel_version
+
+    def body():
+        yield "full:%d\n" % snapshot_version
+        for y in range(32):
+            yield get_pixel_row(y) + "\n"
+
+    return ChunkedResponse(
+        request,
+        body,
+        headers={"Cache-Control": "no-store"},
+        content_type="text/plain",
+    )
+
+
 # Return only pixel changes since the client's last update version.
 def handle_updates(request):
     query = request.query_params
@@ -251,6 +274,7 @@ def create_server():
             Route("/pixel", POST, handle_pixel),
             Route("/pixel-row", GET, handle_pixel_row),
             Route("/pixels", GET, handle_pixel_row),
+            Route("/snapshot", GET, handle_pixel_snapshot),
             Route("/updates", GET, handle_updates),
         ]
     )

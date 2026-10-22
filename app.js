@@ -76,47 +76,86 @@ function drawGrid() {
   context.stroke();
 }
 
+// Retry a pixel edit when the connection drops before a response arrives.
+async function sendPixel(x, y, color) {
+  const body = `x=${x}&y=${y}&color=${color.slice(1)}&name=${encodeURIComponent(userName)}`;
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await fetch("/pixel", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body
+      });
+      if (!response.ok) {
+        console.error("Could not light matrix pixel:", response.status);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      if (attempt === maxAttempts) {
+        console.error("Could not light matrix pixel after retries:", error);
+        return false;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 250 * attempt));
+    }
+  }
+  return false;
+}
+
+// Validate the version header shared by full snapshots and delta updates.
+function parseUpdate(update) {
+  const headerEnd = update.indexOf("\n");
+  const [mode, versionText] = update.slice(0, headerEnd).split(":");
+  const version = Number(versionText);
+  if (
+    headerEnd === -1
+    || !Number.isSafeInteger(version)
+    || version < 0
+    || (mode !== "full" && mode !== "delta")
+  ) {
+    throw new Error("Received an invalid matrix pixel update");
+  }
+  return { mode, version, payload: update.slice(headerEnd + 1) };
+}
+
 // Ask the device for its current pixels so changes on the matrix appear here.
 async function syncPixels() {
   try {
-    // Start with a snapshot, then ask for only changes newer than our version.
+    // Load one streamed snapshot initially, then ask only for newer changes.
     const path = pixelVersion === null
-      ? "/updates"
+      ? "/snapshot"
       : `/updates?since=${pixelVersion}`;
     const response = await fetch(path, { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`Could not load matrix pixels: ${response.status}`);
     }
 
-    const update = await response.text();
-    const headerEnd = update.indexOf("\n");
-    const [mode, versionText] = update.slice(0, headerEnd).split(":");
-    const version = Number(versionText);
-    if (
-      headerEnd === -1
-      || !Number.isSafeInteger(version)
-      || version < 0
-      || (mode !== "full" && mode !== "delta")
-    ) {
-      throw new Error("Received an invalid matrix pixel update");
+    let update = parseUpdate(await response.text());
+    if (update.mode === "full" && !update.payload) {
+      const snapshotResponse = await fetch("/snapshot", { cache: "no-store" });
+      if (!snapshotResponse.ok) {
+        throw new Error(`Could not load matrix snapshot: ${snapshotResponse.status}`);
+      }
+      update = parseUpdate(await snapshotResponse.text());
+      if (update.mode !== "full") {
+        throw new Error("Received an invalid matrix pixel snapshot");
+      }
     }
 
-    const payload = update.slice(headerEnd + 1);
     let redraw = false;
-    if (mode === "full") {
-      // Fetch rows separately to keep each response small for the device.
-      if (payload) {
+    if (update.mode === "full") {
+      // Rows arrive in one response, with only one row buffered by the device.
+      const snapshotRows = update.payload.split("\n");
+      if (
+        snapshotRows.length !== rows + 1
+        || snapshotRows[rows] !== ""
+      ) {
         throw new Error("Received an invalid matrix pixel snapshot");
       }
       const snapshotPixels = new Map();
       for (let y = 0; y < rows; y++) {
-        const rowResponse = await fetch(`/pixel-row?y=${y}`, {
-          cache: "no-store"
-        });
-        if (!rowResponse.ok) {
-          throw new Error(`Could not load matrix pixel row: ${rowResponse.status}`);
-        }
-        const row = await rowResponse.text();
+        const row = snapshotRows[y];
         if (row.length !== columns * 6) {
           throw new Error("Received an invalid matrix pixel row");
         }
@@ -135,8 +174,8 @@ async function syncPixels() {
         litPixels.set(pixel, color);
       }
       redraw = true;
-    } else if (payload) {
-      for (const line of payload.trimEnd().split("\n")) {
+    } else if (update.payload) {
+      for (const line of update.payload.trimEnd().split("\n")) {
         const [xText, yText, color] = line.split(",");
         const x = Number(xText);
         const y = Number(yText);
@@ -159,7 +198,7 @@ async function syncPixels() {
       drawGrid();
     }
     // Accept this version only after its payload has been applied successfully.
-    pixelVersion = version;
+    pixelVersion = update.version;
   } catch (error) {
     console.error("Could not sync matrix pixels:", error);
   } finally {
@@ -177,15 +216,7 @@ canvas.addEventListener("pointerdown", async (event) => {
   const color = colorPicker.value;
 
   // POST sends the selected cell and color to the device's /pixel handler.
-  const response = await fetch("/pixel", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: `x=${x}&y=${y}&color=${color.slice(1)}&name=${encodeURIComponent(userName)}`
-  });
-  if (!response.ok) {
-    console.error("Could not light matrix pixel:", response.status);
-    return;
-  }
+  if (!await sendPixel(x, y, color)) return;
   litPixels.set(`${x},${y}`, color);
   drawGrid();
 });

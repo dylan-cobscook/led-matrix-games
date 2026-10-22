@@ -4,6 +4,8 @@ This is built in Circuit Python, HTML and Javascript to run on an Adafruit Matri
 
 The chip connects to Wi-Fi using the ESP32 co-processor, and serves a webpage where users can draw collaboratively pixel-by-pixel. As you draw, your screen will update with what's shown on the LED matrix, along with everyone else's pixels.
 
+When you first load the webpage, it'll ask for a username. This is then stored in a cookie on your browser, so it will survive refreshes. You must clear the cookie or use an incognito window to change the username. The username is shown on the Portal's serial output when you draw or erase a pixel.
+
 Everything is run locally on the Portal, local network and individual browsers with no cloud connection required.
 
 Drawings can be saved and recalled on the Admin page. Drawings are saved every 30 seconds by default, and the matrix will recall the last drawing that was displayed on power up.

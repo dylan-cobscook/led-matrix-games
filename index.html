@@ -5,29 +5,81 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Matrix Portal Pixel Grid</title>
-  <!-- CSS controls the full-screen canvas and the floating color-picker bar. -->
+  <!-- CSS keeps the drawing tools above the matrix. -->
   <style>
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-    canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+    :root { --header-height: 64px; }
+    canvas {
+      position: fixed;
+      top: var(--header-height);
+      left: 0;
+      display: block;
+      width: 100vw;
+      height: calc(100vh - var(--header-height));
+      touch-action: none;
+    }
     .toolbar {
       position: fixed;
       z-index: 1;
-      top: 16px;
+      top: 0;
+      left: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      height: var(--header-height);
+      padding: 0 20px;
+      color: #fff;
+      background: #191919;
+      border-bottom: 1px solid #555;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      font: 500 14px system-ui, sans-serif;
+    }
+    .tool-controls {
+      position: absolute;
       left: 50%;
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 10px 16px;
-      color: #fff;
-      background: rgba(25, 25, 25, 0.9);
-      border: 1px solid #555;
-      border-radius: 999px;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-      font: 500 14px system-ui, sans-serif;
+      gap: 10px;
       transform: translateX(-50%);
     }
-    .toolbar input { width: 36px; height: 28px; padding: 0; border: 0; background: none; cursor: pointer; }
+    .color-control { display: flex; align-items: center; gap: 8px; }
+    .toolbar input {
+      width: 36px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      background: none;
+      cursor: pointer;
+    }
+    .tool-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 36px;
+      padding: 6px 10px;
+      color: #eee;
+      background: transparent;
+      border: 1px solid #666;
+      border-radius: 8px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .tool-button[aria-pressed="true"] {
+      color: #fff;
+      background: #365c9a;
+      border-color: #8db4ff;
+    }
+    .tool-button svg { width: 16px; height: 16px; fill: currentColor; }
+    .username {
+      max-width: 25%;
+      margin-left: auto;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     dialog {
       width: min(400px, calc(100% - 32px));
       padding: 24px;
@@ -43,13 +95,35 @@
     #name-form h1 { margin: 0; font-size: 20px; }
     #name-form input, #name-form button { padding: 10px; font: inherit; }
     #name-form button { cursor: pointer; }
+    @media (max-width: 520px) {
+      :root { --header-height: 60px; }
+      .toolbar { padding: 0 10px; }
+      .tool-controls { gap: 6px; }
+      .tool-button { gap: 4px; padding: 6px; }
+      .username { max-width: 22%; font-size: 12px; }
+    }
+    @media (max-width: 400px) {
+      .tool-button span { display: none; }
+    }
   </style>
 </head>
 <body>
-  <!-- The toolbar lets you choose a color for the next pixel you click. -->
   <header class="toolbar">
-    <label for="pixel-color">Pixel color</label>
-    <input id="pixel-color" type="color" value="#ffffff" aria-label="Choose pixel color">
+    <div class="tool-controls" aria-label="Pixel drawing tools">
+      <label class="color-control" for="pixel-color">
+        <span>Color</span>
+        <input id="pixel-color" type="color" value="#ffffff" aria-label="Choose pixel color">
+      </label>
+      <button id="paint-tool" class="tool-button" type="button" aria-label="Paint pixels" aria-pressed="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 17.25 9.06-9.06 3.75 3.75L6.75 21H3v-3.75Zm11.12-11.12 1.41-1.41a2 2 0 0 1 2.83 0l.92.92a2 2 0 0 1 0 2.83l-1.41 1.41-3.75-3.75ZM3 22h18v-2H3v2Z"/></svg>
+        <span>Paint</span>
+      </button>
+      <button id="erase-tool" class="tool-button" type="button" aria-label="Erase pixels" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16.24 3.56 4.2 4.2a2 2 0 0 1 0 2.83l-9.9 9.9a2 2 0 0 1-1.42.59H4.5a2 2 0 0 1-1.41-.59l-2.1-2.1a2 2 0 0 1 0-2.83l12.42-12a2 2 0 0 1 2.83 0ZM4.5 19.08h4.62l3.54-3.54-5.66-5.66-4.6 4.45 2.1 2.1v2.65ZM19.03 9.17l-4.2-4.2-6.4 6.18 5.66 5.66 4.94-4.81a2 2 0 0 0 0-2.83Z"/></svg>
+        <span>Erase</span>
+      </button>
+    </div>
+    <span id="current-user" class="username" aria-label="Username"></span>
   </header>
   <dialog id="name-dialog" aria-labelledby="name-title" closedby="none">
     <form id="name-form">
@@ -61,6 +135,6 @@
   </dialog>
   <!-- JavaScript draws the interactive LED grid inside this canvas. -->
   <canvas id="grid" aria-label="64 by 32 LED pixel grid"></canvas>
-  <script src="/app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

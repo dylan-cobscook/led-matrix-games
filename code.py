@@ -122,8 +122,9 @@ def handle_pixel(request):
         x = int(form["x"])
         y = int(form["y"])
         color_text = form.get("color", "FFFFFF")
+        mode = form.get("mode", "paint")
         name = form.get("name", "Anonymous")
-        if not isinstance(name, str):
+        if not isinstance(name, str) or mode not in ("paint", "erase"):
             raise ValueError
         if len(color_text) != 6 or any(
             character not in "0123456789abcdefABCDEF"
@@ -134,7 +135,7 @@ def handle_pixel(request):
     except (KeyError, TypeError, ValueError):
         return make_response(
             request,
-            "Invalid pixel coordinates or color",
+            "Invalid pixel coordinates, color, or mode",
             (400, "Bad Request"),
         )
     if not 0 <= x < 64 or not 0 <= y < 32:
@@ -150,29 +151,37 @@ def handle_pixel(request):
     ).strip()[:32]
     if not name:
         name = "Anonymous"
-    color_index = color_indices.get(color)
-    if color_index is None:
-        if next_color_index >= 256:
-            return make_response(
-                request,
-                "Color palette is full",
-                (400, "Bad Request"),
-            )
-        color_index = next_color_index
-        next_color_index += 1
-        color_indices[color] = color_index
-        palette[color_index] = color
     previous_color_index = pixels[x, y]
-    pixels[x, y] = color_index
-    if previous_color_index != color_index:
-        # Log actual changes only; repeated clicks on the same color need no sync.
+    if mode == "erase":
+        pixels[x, y] = 0
+        update_color = None
+    else:
+        color_index = color_indices.get(color)
+        if color_index is None:
+            if next_color_index >= 256:
+                return make_response(
+                    request,
+                    "Color palette is full",
+                    (400, "Bad Request"),
+                )
+            color_index = next_color_index
+            next_color_index += 1
+            color_indices[color] = color_index
+            palette[color_index] = color
+        pixels[x, y] = color_index
+        update_color = color
+    if previous_color_index != pixels[x, y]:
+        # Log actual changes only; repeated clicks on the same result need no sync.
         pixel_version += 1
-        pixel_updates.append((pixel_version, x, y, color))
+        pixel_updates.append((pixel_version, x, y, update_color))
         if len(pixel_updates) > PIXEL_UPDATE_HISTORY:
             # Older clients will receive a fresh snapshot if their changes expire.
             del pixel_updates[0]
     client_ip = request.client_address[0]
-    print("%s at %s drew %dx%d #%06X" % (name, client_ip, x, y, color))
+    if mode == "erase":
+        print("%s at %s erased %dx%d" % (name, client_ip, x, y))
+    else:
+        print("%s at %s drew %dx%d #%06X" % (name, client_ip, x, y, color))
     return make_response(request, "OK")
 
 
@@ -250,11 +259,14 @@ def handle_updates(request):
         # The browser fetches each row separately to limit peak memory use.
         body = "full:%d\n" % pixel_version
     else:
-        # Delta lines contain one changed pixel each: x,y,six-digit-color.
+        # Delta lines contain one changed pixel: x,y,color or dashes when cleared.
         updates = ["delta:%d\n" % pixel_version]
         for version, x, y, color in pixel_updates:
             if version > since:
-                updates.append("%d,%d,%06x\n" % (x, y, color))
+                if color is None:
+                    updates.append("%d,%d,------\n" % (x, y))
+                else:
+                    updates.append("%d,%d,%06x\n" % (x, y, color))
         body = "".join(updates)
 
     return make_response(

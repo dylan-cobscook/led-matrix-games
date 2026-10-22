@@ -4,6 +4,9 @@ const rows = 32;
 const canvas = document.getElementById("grid");
 const context = canvas.getContext("2d");
 const colorPicker = document.getElementById("pixel-color");
+const paintTool = document.getElementById("paint-tool");
+const eraseTool = document.getElementById("erase-tool");
+const currentUser = document.getElementById("current-user");
 const nameDialog = document.getElementById("name-dialog");
 const nameForm = document.getElementById("name-form");
 const nameInput = document.getElementById("user-name");
@@ -15,10 +18,13 @@ const savedNameCookie = document.cookie
 let userName = savedNameCookie
   ? decodeURIComponent(savedNameCookie.slice(nameCookie.length + 1))
   : "Anonymous";
+let activeTool = "paint";
 // Store only lit cells, using "x,y" as the key and a color as the value.
 const litPixels = new Map();
 // Null means this browser has not yet loaded an initial snapshot.
 let pixelVersion = null;
+
+currentUser.textContent = userName;
 
 if (!savedNameCookie || !userName.trim()) {
   userName = "Anonymous";
@@ -34,6 +40,7 @@ if (!savedNameCookie || !userName.trim()) {
     }
     userName = enteredName;
     document.cookie = `${nameCookie}=${encodeURIComponent(userName)}; Max-Age=31536000; Path=/; SameSite=Lax`;
+    currentUser.textContent = userName;
     nameDialog.close();
   });
   nameDialog.showModal();
@@ -77,8 +84,8 @@ function drawGrid() {
 }
 
 // Retry a pixel edit when the connection drops before a response arrives.
-async function sendPixel(x, y, color) {
-  const body = `x=${x}&y=${y}&color=${color.slice(1)}&name=${encodeURIComponent(userName)}`;
+async function sendPixel(x, y, color, mode) {
+  const body = `x=${x}&y=${y}&color=${color.slice(1)}&mode=${mode}&name=${encodeURIComponent(userName)}`;
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -88,13 +95,13 @@ async function sendPixel(x, y, color) {
         body
       });
       if (!response.ok) {
-        console.error("Could not light matrix pixel:", response.status);
+        console.error("Could not update matrix pixel:", response.status);
         return false;
       }
       return true;
     } catch (error) {
       if (attempt === maxAttempts) {
-        console.error("Could not light matrix pixel after retries:", error);
+        console.error("Could not update matrix pixel after retries:", error);
         return false;
       }
       await new Promise((resolve) => window.setTimeout(resolve, 250 * attempt));
@@ -186,11 +193,15 @@ async function syncPixels() {
           || !Number.isInteger(y)
           || y < 0
           || y >= rows
-          || !/^[0-9a-f]{6}$/.test(color)
+          || (color !== "------" && !/^[0-9a-f]{6}$/.test(color))
         ) {
           throw new Error("Received an invalid matrix pixel change");
         }
-        litPixels.set(`${x},${y}`, `#${color}`);
+        if (color === "------") {
+          litPixels.delete(`${x},${y}`);
+        } else {
+          litPixels.set(`${x},${y}`, `#${color}`);
+        }
       }
       redraw = true;
     }
@@ -207,6 +218,16 @@ async function syncPixels() {
   }
 }
 
+// Keep the selected tool and its accessible pressed state in sync.
+function selectTool(tool) {
+  activeTool = tool;
+  paintTool.setAttribute("aria-pressed", String(tool === "paint"));
+  eraseTool.setAttribute("aria-pressed", String(tool === "erase"));
+}
+
+paintTool.addEventListener("click", () => selectTool("paint"));
+eraseTool.addEventListener("click", () => selectTool("erase"));
+
 // Convert a click's screen position to a grid cell and send it to the device.
 canvas.addEventListener("pointerdown", async (event) => {
   const bounds = canvas.getBoundingClientRect();
@@ -214,10 +235,15 @@ canvas.addEventListener("pointerdown", async (event) => {
   const y = Math.floor((event.clientY - bounds.top) / bounds.height * rows);
   if (x < 0 || x >= columns || y < 0 || y >= rows) return;
   const color = colorPicker.value;
+  const mode = activeTool;
 
-  // POST sends the selected cell and color to the device's /pixel handler.
-  if (!await sendPixel(x, y, color)) return;
-  litPixels.set(`${x},${y}`, color);
+  // POST sends the selected cell, color, and tool to the device's /pixel handler.
+  if (!await sendPixel(x, y, color, mode)) return;
+  if (mode === "erase") {
+    litPixels.delete(`${x},${y}`);
+  } else {
+    litPixels.set(`${x},${y}`, color);
+  }
   drawGrid();
 });
 

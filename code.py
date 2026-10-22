@@ -56,16 +56,6 @@ group = displayio.Group()
 group.append(displayio.TileGrid(pixels, pixel_shader=palette))
 display.show(group)
 
-# Keep trying to connect until the Wi-Fi module joins the configured network.
-print("Connecting to WiFi...")
-while not esp.is_connected:
-    try:
-        esp.connect_AP(secrets.secrets["ssid"], secrets.secrets["password"])
-    except RuntimeError:
-        continue
-
-
-
 PORT = 80
 # Keep a bounded change log so clients can catch up without storing every edit.
 PIXEL_UPDATE_HISTORY = 64
@@ -214,27 +204,76 @@ def web_app(environ, start_response):
     return ["Not found"]
 
 
-# Start the web server on the Wi-Fi interface.
-adafruit_esp32spi_wsgiserver.set_interface(esp)
-server = adafruit_esp32spi_wsgiserver.WSGIServer(
-    port=PORT, application=web_app
-)
-server.start()
+def connect_to_wifi():
+    # Keep retrying until the ESP32 has joined the configured network.
+    while True:
+        try:
+            if not esp.is_connected:
+                esp.connect_AP(
+                    secrets.secrets["ssid"], secrets.secrets["password"]
+                )
+            if esp.is_connected:
+                return
+        except (OSError, RuntimeError) as exc:
+            if "ESP32 not responding" in str(exc):
+                print("ESP32 is not responding; resetting it...")
+                esp.reset()
+            else:
+                print("WiFi connection error:", exc)
+        time.sleep(1)
 
-print(
-    "Listening for web requests at http://%s:%d/"
-    % (esp.pretty_ip(esp.ip_address), PORT)
-)
+
+def start_server():
+    # Create a fresh server after resets so it does not reuse stale sockets.
+    while True:
+        try:
+            adafruit_esp32spi_wsgiserver.set_interface(esp)
+            new_server = adafruit_esp32spi_wsgiserver.WSGIServer(
+                port=PORT, application=web_app
+            )
+            new_server.start()
+            print(
+                "Listening for web requests at http://%s:%d/"
+                % (esp.pretty_ip(esp.ip_address), PORT)
+            )
+            return new_server
+        except (OSError, RuntimeError) as exc:
+            if "ESP32 not responding" not in str(exc):
+                raise
+            print("ESP32 stopped responding while starting the server.")
+            esp.reset()
+            connect_to_wifi()
+
+
+def recover_esp32():
+    # Reset the co-processor, reconnect Wi-Fi, and replace its lost sockets.
+    print("ESP32 is not responding; resetting and reconnecting...")
+    esp.reset()
+    connect_to_wifi()
+    return start_server()
+
+
+# Connect to Wi-Fi and start serving requests.
+print("Connecting to WiFi...")
+connect_to_wifi()
+server = start_server()
+
 
 # Keep checking for incoming browser requests. Briefly pause after socket errors.
 while True:
     try:
         server.update_poll()
     except OSError as exc:
-        print("Socket error:", exc)
-        time.sleep(1)
+        if "ESP32 not responding" in str(exc):
+            server = recover_esp32()
+        else:
+            print("Socket error:", exc)
+            time.sleep(1)
     except RuntimeError as exc:
-        if not str(exc).startswith("Failed to send "):
+        if "ESP32 not responding" in str(exc):
+            server = recover_esp32()
+        elif str(exc).startswith("Failed to send "):
+            print("Socket send error:", exc)
+            time.sleep(1)
+        else:
             raise
-        print("Socket send error:", exc)
-        time.sleep(1)

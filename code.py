@@ -181,7 +181,18 @@ def handle_pixel(request):
     if mode == "erase":
         print("%s at %s erased %dx%d" % (name, client_ip, x, y))
     else:
-        print("%s at %s drew %dx%d #%06X" % (name, client_ip, x, y, color))
+        print(
+            "\033[38;2;%d;%d;%dm%s at %s drew %dx%d\033[0m"
+            % (
+                (color >> 16) & 0xFF,
+                (color >> 8) & 0xFF,
+                color & 0xFF,
+                name,
+                client_ip,
+                x,
+                y,
+            )
+        )
     return make_response(request, "OK")
 
 

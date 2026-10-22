@@ -10,7 +10,8 @@ import framebufferio
 import rgbmatrix
 from digitalio import DigitalInOut
 from adafruit_esp32spi import adafruit_esp32spi
-from adafruit_esp32spi import adafruit_esp32spi_wsgiserver
+from adafruit_esp32spi.socketpool import SocketPool
+from adafruit_httpserver import GET, POST, Response, Route, Server
 
 # These pins connect the ESP32 Wi-Fi module to the board.
 esp32_cs = DigitalInOut(board.ESP_CS)
@@ -54,7 +55,7 @@ color_indices = {0xFFFFFF: 1}
 next_color_index = 2
 group = displayio.Group()
 group.append(displayio.TileGrid(pixels, pixel_shader=palette))
-display.show(group)
+display.root_group = group
 
 PORT = 80
 # Keep a bounded change log so clients can catch up without storing every edit.
@@ -74,134 +75,164 @@ def get_pixel_row(y):
     )
 
 
-# Handle each HTTP request from the browser and return a response.
-def web_app(environ, start_response):
+# Return a plain-text response with the requested status and headers.
+def make_response(request, body, status=(200, "OK"), headers=None):
+    return Response(
+        request,
+        body,
+        status=status,
+        headers=headers,
+        content_type="text/plain",
+    )
+
+
+# Serve the browser application from the device filesystem.
+def handle_home(request):
+    with open("index.html", "r") as html_file:
+        html = html_file.read()
+    return Response(
+        request,
+        html,
+        content_type="text/html; charset=utf-8",
+    )
+
+
+# Apply a pixel edit submitted by the browser.
+def handle_pixel(request):
     global next_color_index, pixel_version
-    method = environ["REQUEST_METHOD"]
-    path = environ["PATH_INFO"]
-
-    # The browser sends a POST request here when someone clicks a grid cell.
-    if method == "POST" and path == "/pixel":
-        try:
-            # Read the form fields and turn the coordinates and color into numbers.
-            form = {}
-            for item in environ["wsgi.input"].read().split("&"):
-                key, value = item.split("=", 1)
-                form[key] = value
-            x = int(form["x"])
-            y = int(form["y"])
-            color_text = form.get("color", "FFFFFF")
-            if len(color_text) != 6 or any(
-                character not in "0123456789abcdefABCDEF"
-                for character in color_text
-            ):
-                raise ValueError
-            color = int(color_text, 16)
-        except (KeyError, ValueError):
-            start_response("400 Bad Request", [("Content-Type", "text/plain")])
-            return ["Invalid pixel coordinates or color"]
-        if not 0 <= x < 64 or not 0 <= y < 32:
-            start_response("400 Bad Request", [("Content-Type", "text/plain")])
-            return ["Pixel coordinates out of range"]
-        color_index = color_indices.get(color)
-        if color_index is None:
-            if next_color_index >= 256:
-                start_response("400 Bad Request", [("Content-Type", "text/plain")])
-                return ["Color palette is full"]
-            color_index = next_color_index
-            next_color_index += 1
-            color_indices[color] = color_index
-            palette[color_index] = color
-        previous_color_index = pixels[x, y]
-        pixels[x, y] = color_index
-        if previous_color_index != color_index:
-            # Log actual changes only; repeated clicks on the same color need no sync.
-            pixel_version += 1
-            pixel_updates.append((pixel_version, x, y, color))
-            if len(pixel_updates) > PIXEL_UPDATE_HISTORY:
-                # Older clients will receive a fresh snapshot if their changes expire.
-                del pixel_updates[0]
-        client_ip = environ.get("REMOTE_ADDR", "unknown")
-        print("%s drew %d/%d #%06X" % (client_ip, x, y, color))
-        start_response("200 OK", [("Content-Type", "text/plain")])
-        return ["OK"]
-
-    # Send one row at a time so snapshot responses stay small on the device.
-    if method == "GET" and path in ("/pixel-row", "/pixels"):
-        try:
-            key, value = environ.get("QUERY_STRING", "").split("=", 1)
-            if key != "y":
-                raise ValueError
-            y = int(value)
-        except ValueError:
-            start_response("400 Bad Request", [("Content-Type", "text/plain")])
-            return ["Invalid pixel row"]
-        if not 0 <= y < 32:
-            start_response("400 Bad Request", [("Content-Type", "text/plain")])
-            return ["Pixel row out of range"]
-        start_response(
-            "200 OK",
-            [
-                ("Content-Type", "text/plain"),
-                ("Cache-Control", "no-store"),
-            ],
+    try:
+        form = request.form_data
+        x = int(form["x"])
+        y = int(form["y"])
+        color_text = form.get("color", "FFFFFF")
+        if len(color_text) != 6 or any(
+            character not in "0123456789abcdefABCDEF"
+            for character in color_text
+        ):
+            raise ValueError
+        color = int(color_text, 16)
+    except (KeyError, TypeError, ValueError):
+        return make_response(
+            request,
+            "Invalid pixel coordinates or color",
+            (400, "Bad Request"),
         )
-        return [get_pixel_row(y)]
-
-    # Return only pixel changes since the client's last update version.
-    if method == "GET" and path == "/updates":
-        query = environ.get("QUERY_STRING", "")
-        since = None
-        if query:
-            try:
-                key, value = query.split("=", 1)
-                if key != "since":
-                    raise ValueError
-                since = int(value)
-                if since < 0:
-                    raise ValueError
-            except ValueError:
-                start_response("400 Bad Request", [("Content-Type", "text/plain")])
-                return ["Invalid update version"]
-
-        # Send a full snapshot to new or stale clients so they can resynchronize.
-        needs_snapshot = (
-            since is None
-            or since > pixel_version
-            or (
-                pixel_updates
-                and since < pixel_updates[0][0] - 1
+    if not 0 <= x < 64 or not 0 <= y < 32:
+        return make_response(
+            request,
+            "Pixel coordinates out of range",
+            (400, "Bad Request"),
+        )
+    color_index = color_indices.get(color)
+    if color_index is None:
+        if next_color_index >= 256:
+            return make_response(
+                request,
+                "Color palette is full",
+                (400, "Bad Request"),
             )
+        color_index = next_color_index
+        next_color_index += 1
+        color_indices[color] = color_index
+        palette[color_index] = color
+    previous_color_index = pixels[x, y]
+    pixels[x, y] = color_index
+    if previous_color_index != color_index:
+        # Log actual changes only; repeated clicks on the same color need no sync.
+        pixel_version += 1
+        pixel_updates.append((pixel_version, x, y, color))
+        if len(pixel_updates) > PIXEL_UPDATE_HISTORY:
+            # Older clients will receive a fresh snapshot if their changes expire.
+            del pixel_updates[0]
+    client_ip = request.client_address[0]
+    print("%s drew %d/%d #%06X" % (client_ip, x, y, color))
+    return make_response(request, "OK")
+
+
+# Send one row at a time so snapshot responses stay small on the device.
+def handle_pixel_row(request):
+    query = request.query_params
+    try:
+        if query.fields != ["y"] or len(query.get_list("y")) != 1:
+            raise ValueError
+        y = int(query["y"])
+    except (KeyError, TypeError, ValueError):
+        return make_response(
+            request,
+            "Invalid pixel row",
+            (400, "Bad Request"),
         )
-        if needs_snapshot:
-            # The browser fetches each row separately to limit peak memory use.
-            body = "full:%d\n" % pixel_version
-        else:
-            # Delta lines contain one changed pixel each: x,y,six-digit-color.
-            updates = ["delta:%d\n" % pixel_version]
-            for version, x, y, color in pixel_updates:
-                if version > since:
-                    updates.append("%d,%d,%06x\n" % (x, y, color))
-            body = "".join(updates)
-
-        start_response(
-            "200 OK",
-            [
-                ("Content-Type", "text/plain"),
-                ("Cache-Control", "no-store"),
-            ],
+    if not 0 <= y < 32:
+        return make_response(
+            request,
+            "Pixel row out of range",
+            (400, "Bad Request"),
         )
-        return [body]
+    return make_response(
+        request,
+        get_pixel_row(y),
+        headers={"Cache-Control": "no-store"},
+    )
 
-    # Serve the web page when the browser opens the device's main address.
-    if method == "GET" and path == "/":
-        with open("index.html", "r") as html_file:
-            html = html_file.read()
-        start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
-        return [html]
 
-    start_response("404 Not Found", [("Content-Type", "text/plain")])
-    return ["Not found"]
+# Return only pixel changes since the client's last update version.
+def handle_updates(request):
+    query = request.query_params
+    since = None
+    if query.fields:
+        try:
+            if query.fields != ["since"] or len(query.get_list("since")) != 1:
+                raise ValueError
+            since = int(query["since"])
+            if since < 0:
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            return make_response(
+                request,
+                "Invalid update version",
+                (400, "Bad Request"),
+            )
+
+    # Send a full snapshot to new or stale clients so they can resynchronize.
+    needs_snapshot = (
+        since is None
+        or since > pixel_version
+        or (
+            pixel_updates
+            and since < pixel_updates[0][0] - 1
+        )
+    )
+    if needs_snapshot:
+        # The browser fetches each row separately to limit peak memory use.
+        body = "full:%d\n" % pixel_version
+    else:
+        # Delta lines contain one changed pixel each: x,y,six-digit-color.
+        updates = ["delta:%d\n" % pixel_version]
+        for version, x, y, color in pixel_updates:
+            if version > since:
+                updates.append("%d,%d,%06x\n" % (x, y, color))
+        body = "".join(updates)
+
+    return make_response(
+        request,
+        body,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def create_server():
+    # Use ESP32SPI's socket pool with Adafruit's maintained HTTP server.
+    new_server = Server(SocketPool(esp))
+    new_server.add_routes(
+        [
+            Route("/", GET, handle_home),
+            Route("/pixel", POST, handle_pixel),
+            Route("/pixel-row", GET, handle_pixel_row),
+            Route("/pixels", GET, handle_pixel_row),
+            Route("/updates", GET, handle_updates),
+        ]
+    )
+    return new_server
 
 
 def connect_to_wifi():
@@ -227,11 +258,8 @@ def start_server():
     # Create a fresh server after resets so it does not reuse stale sockets.
     while True:
         try:
-            adafruit_esp32spi_wsgiserver.set_interface(esp)
-            new_server = adafruit_esp32spi_wsgiserver.WSGIServer(
-                port=PORT, application=web_app
-            )
-            new_server.start()
+            new_server = create_server()
+            new_server.start(esp.pretty_ip(esp.ip_address), PORT)
             print(
                 "Listening for web requests at http://%s:%d/"
                 % (esp.pretty_ip(esp.ip_address), PORT)
@@ -262,7 +290,7 @@ server = start_server()
 # Keep checking for incoming browser requests. Briefly pause after socket errors.
 while True:
     try:
-        server.update_poll()
+        server.poll()
     except OSError as exc:
         if "ESP32 not responding" in str(exc):
             server = recover_esp32()

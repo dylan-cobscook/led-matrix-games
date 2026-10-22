@@ -47,7 +47,8 @@
     const colorPicker = document.getElementById("pixel-color");
     // Store only lit cells, using "x,y" as the key and a color as the value.
     const litPixels = new Map();
-    let lastSnapshot = null;
+    // Null means this browser has not yet loaded an initial snapshot.
+    let pixelVersion = null;
 
     // Paint the background, colored cells, and grid lines onto the canvas.
     function drawGrid() {
@@ -89,36 +90,77 @@
     // Ask the device for its current pixels so changes on the matrix appear here.
     async function syncPixels() {
       try {
-        const response = await fetch("/pixels", { cache: "no-store" });
+        // Start with a snapshot, then ask for only changes newer than our version.
+        const path = pixelVersion === null
+          ? "/updates"
+          : `/updates?since=${pixelVersion}`;
+        const response = await fetch(path, { cache: "no-store" });
         if (!response.ok) {
           throw new Error(`Could not load matrix pixels: ${response.status}`);
         }
 
-        const snapshot = await response.text();
-        // Each cell takes six characters: a color code or dashes for a dark cell.
-        if (snapshot.length !== columns * rows * 6) {
-          throw new Error("Received an invalid matrix pixel snapshot");
+        const update = await response.text();
+        const headerEnd = update.indexOf("\n");
+        const [mode, versionText] = update.slice(0, headerEnd).split(":");
+        const version = Number(versionText);
+        if (
+          headerEnd === -1
+          || !Number.isSafeInteger(version)
+          || version < 0
+          || (mode !== "full" && mode !== "delta")
+        ) {
+          throw new Error("Received an invalid matrix pixel update");
         }
-        // Redraw only when the device reports a different set of pixels.
-        if (snapshot !== lastSnapshot) {
+
+        const payload = update.slice(headerEnd + 1);
+        let redraw = false;
+        if (mode === "full") {
+          // A full response replaces local state; a delta only updates changed cells.
+          // Each cell takes six characters: a color code or dashes for a dark cell.
+          if (payload.length !== columns * rows * 6) {
+            throw new Error("Received an invalid matrix pixel snapshot");
+          }
           litPixels.clear();
           for (let y = 0; y < rows; y++) {
             for (let x = 0; x < columns; x++) {
               const offset = (y * columns + x) * 6;
-              const pixel = snapshot.slice(offset, offset + 6);
+              const pixel = payload.slice(offset, offset + 6);
               if (pixel !== "------") {
                 litPixels.set(`${x},${y}`, `#${pixel}`);
               }
             }
           }
-          lastSnapshot = snapshot;
+          redraw = true;
+        } else if (payload) {
+          for (const line of payload.trimEnd().split("\n")) {
+            const [xText, yText, color] = line.split(",");
+            const x = Number(xText);
+            const y = Number(yText);
+            if (
+              !Number.isInteger(x)
+              || x < 0
+              || x >= columns
+              || !Number.isInteger(y)
+              || y < 0
+              || y >= rows
+              || !/^[0-9a-f]{6}$/.test(color)
+            ) {
+              throw new Error("Received an invalid matrix pixel change");
+            }
+            litPixels.set(`${x},${y}`, `#${color}`);
+          }
+          redraw = true;
+        }
+        if (redraw) {
           drawGrid();
         }
+        // Accept this version only after its payload has been applied successfully.
+        pixelVersion = version;
       } catch (error) {
         console.error("Could not sync matrix pixels:", error);
       } finally {
-        // Try again in one second, even if this request failed.
-        window.setTimeout(syncPixels, 1000);
+        // A little timing variation prevents all connected browsers polling together.
+        window.setTimeout(syncPixels, 500 + Math.random() * 250);
       }
     }
 

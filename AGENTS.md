@@ -3,9 +3,11 @@
 ## Architecture
 
 - This is a CircuitPython project for an Adafruit Matrix Portal (ATSAMD51J19 with an ESP32 Wi-Fi co-processor) driving a 64×32 RGB LED matrix.
-- `code.py` is the device firmware. It configures the SPI Wi-Fi connection and matrix display, then serves the browser app over HTTP. Its `/pixel` route accepts edits, `/snapshot` streams the versioned full matrix one row at a time, `/pixel-row?y=` returns one row, and `/updates` returns a snapshot marker or versioned changes.
+- `code.py` is the device firmware. It configures the SPI Wi-Fi connection and matrix display, then serves the browser app over HTTP. Its `/pixel` route accepts edits, `/snapshot` streams the versioned full matrix one row at a time, `/pixel-row?y=` returns one row, `/updates` returns a snapshot marker or versioned changes, and `/admin` serves the password-gated drawing manager.
 - `index.html` and `app.js` are the browser client. The device serves them separately to keep each response small; the canvas mirrors the 64×32 matrix, while the JavaScript draws pixels, posts edits, and polls for updates.
-- `secrets.py` supplies the Wi-Fi credentials used by the firmware. Keep credentials private and do not commit them.
+- `admin.html` is the drawing manager. Saved drawings and the current autosave are stored in chunked files in `/drawings` on the CircuitPython filesystem; edits autosave after 30 seconds without changes. The firmware can also read drawings saved by the previous JSON format.
+- `boot.py` runs before `code.py` on a full board startup and makes the filesystem writable by CircuitPython so drawing files can be saved; a soft reload of `code.py` does not rerun it. While running, the computer's CIRCUITPY mount is read-only.
+- `secrets.py` supplies the Wi-Fi credentials and admin password used by the firmware. Keep credentials private and do not commit them.
 - The repository has no application subdirectories, dependency manifest, CI configuration, or test suite. `README.md` currently contains only a placeholder.
 
 ## Build and Test
@@ -22,6 +24,7 @@
 - Preserve the HTTP contract between `code.py` and `index.html`, including coordinate and color validation, streamed snapshot and delta response formats, and cache behavior.
 - Follow the existing simple style: `snake_case` for Python functions and variables, uppercase names for constants, and self-contained HTML/CSS/JavaScript without a frontend build toolchain.
 - Keep device memory use bounded. Reuse the bounded pixel-update history pattern rather than retaining an unbounded log.
+- Admin requests send the password over the existing plain HTTP connection. Keep this feature on a trusted local network; the password is not encrypted in transit.
 - This is a demo for students who are learning about coding. Comment the code to explain the purpose of each function and the meaning of each variable. Avoid complex or clever code that is hard to read.
 
 ## Completing a Change

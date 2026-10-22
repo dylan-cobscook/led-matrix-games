@@ -5,8 +5,8 @@
 secrets = {
     'ssid' : 'SSID',
     'password' : 'PASSWORD',
+    'admin_password' : 'hello',
     'timezone' : "America/New_York", # http://worldtimeapi.org/timezones
 #    'github_token' : 'token',
 #    'hackaday_token' : 'token',
     }
-

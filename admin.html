@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drawing Admin</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      color: #eee;
+      background: #111;
+      font: 15px system-ui, sans-serif;
+    }
+    main { width: min(900px, 100%); margin: 0 auto; }
+    h1 { margin-top: 0; }
+    a, button { color: inherit; }
+    a { display: inline-block; margin-bottom: 20px; }
+    form, .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    input, button {
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid #666;
+      border-radius: 6px;
+      background: #222;
+      font: inherit;
+    }
+    input { color: #eee; }
+    button { cursor: pointer; }
+    button:disabled { cursor: wait; opacity: 0.6; }
+    #message { min-height: 24px; }
+    #drawings {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 14px;
+      margin-top: 20px;
+    }
+    .drawing {
+      padding: 12px;
+      border: 1px solid #444;
+      border-radius: 8px;
+      background: #191919;
+    }
+    .drawing h2 { margin: 0 0 10px; font-size: 16px; }
+    .drawing canvas {
+      display: block;
+      width: 100%;
+      aspect-ratio: 2 / 1;
+      image-rendering: pixelated;
+      background: #000;
+      border: 1px solid #555;
+    }
+    .drawing button { margin: 10px 6px 0 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <a href="/">Back to drawing</a>
+    <h1>Drawing admin</h1>
+    <form id="login-form">
+      <label for="password">Admin password</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Connect</button>
+    </form>
+    <p id="message" role="status"></p>
+    <section id="admin-tools" hidden>
+      <div class="actions">
+        <button id="save" type="button">Save current drawing</button>
+        <button id="new" type="button">Start new drawing</button>
+      </div>
+      <h2>Saved drawings</h2>
+      <div id="drawings"></div>
+    </section>
+  </main>
+  <script>
+    const loginForm = document.getElementById("login-form");
+    const passwordInput = document.getElementById("password");
+    const message = document.getElementById("message");
+    const adminTools = document.getElementById("admin-tools");
+    const drawings = document.getElementById("drawings");
+    let adminPassword = "";
+
+    async function adminRequest(action, fields = {}) {
+      const body = new URLSearchParams({
+        password: adminPassword,
+        action,
+        ...fields
+      });
+      const response = await fetch("/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(text || `Request failed (${response.status})`);
+      }
+      return text;
+    }
+
+    function makePreview(pixelData) {
+      if (pixelData.length !== 64 * 32 * 6) {
+        throw new Error("The device returned an invalid drawing.");
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = 64;
+      canvas.height = 32;
+      const context = canvas.getContext("2d");
+      for (let y = 0; y < 32; y++) {
+        for (let x = 0; x < 64; x++) {
+          const offset = (y * 64 + x) * 6;
+          const color = pixelData.slice(offset, offset + 6);
+          if (color !== "------") {
+            if (!/^[0-9a-f]{6}$/i.test(color)) {
+              throw new Error("The device returned an invalid pixel color.");
+            }
+            context.fillStyle = `#${color}`;
+            context.fillRect(x, y, 1, 1);
+          }
+        }
+      }
+      return canvas;
+    }
+
+    async function loadDrawings() {
+      const items = JSON.parse(await adminRequest("list"));
+      drawings.replaceChildren();
+      if (!items.length) {
+        drawings.textContent = "No saved drawings yet.";
+        return;
+      }
+      for (const item of items) {
+        const card = document.createElement("article");
+        card.className = "drawing";
+        const title = document.createElement("h2");
+        title.textContent = item.name;
+        card.append(title);
+        try {
+          card.append(makePreview(await adminRequest("show", { id: item.id })));
+        } catch (error) {
+          const previewError = document.createElement("p");
+          previewError.textContent = `Preview unavailable: ${error.message}`;
+          card.append(previewError);
+        }
+        const recallButton = document.createElement("button");
+        recallButton.type = "button";
+        recallButton.textContent = "Recall";
+        recallButton.addEventListener("click", async () => {
+          if (!window.confirm(`Recall "${item.name}" to the matrix?`)) return;
+          try {
+            await adminRequest("load", { id: item.id });
+            message.textContent = `Recalled "${item.name}".`;
+          } catch (error) {
+            message.textContent = error.message;
+          }
+        });
+        card.append(recallButton);
+        drawings.append(card);
+      }
+    }
+
+    loginForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      adminPassword = passwordInput.value;
+      try {
+        await loadDrawings();
+        adminTools.hidden = false;
+        passwordInput.value = "";
+        message.textContent = "Connected. The password stays only in this page.";
+      } catch (error) {
+        adminPassword = "";
+        message.textContent = error.message;
+      }
+    });
+
+    document.getElementById("save").addEventListener("click", async () => {
+      const name = window.prompt("Name this drawing:");
+      if (name === null) return;
+      try {
+        await adminRequest("save", { name });
+        await loadDrawings();
+        message.textContent = "Drawing saved.";
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    });
+
+    document.getElementById("new").addEventListener("click", async () => {
+      if (!window.confirm("Start a new drawing? The current drawing will be kept in Saved drawings.")) return;
+      try {
+        await adminRequest("new");
+        await loadDrawings();
+        message.textContent = "Started a new drawing. The previous drawing is in Saved drawings.";
+      } catch (error) {
+        message.textContent = error.message;
+      }
+    });
+  </script>
+</body>
+</html>

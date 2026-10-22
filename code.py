@@ -1,4 +1,7 @@
 # Standard library modules used for delays and the Wi-Fi credentials.
+import gc
+import json
+import os
 import time
 import secrets
 
@@ -66,11 +69,17 @@ group.append(displayio.TileGrid(pixels, pixel_shader=palette))
 display.root_group = group
 
 PORT = 80
+DRAWINGS_DIRECTORY = "/drawings"
+AUTOSAVE_PATH = DRAWINGS_DIRECTORY + "/current.json"
+AUTOSAVE_DELAY = 30
 # Keep a bounded change log so clients can catch up without storing every edit.
 PIXEL_UPDATE_HISTORY = 64
 # Each change gets a version so browsers can ask only for edits they have not seen.
 pixel_version = 0
 pixel_updates = []
+drawing_dirty = False
+last_drawing_change = 0
+drawing_storage_available = False
 
 
 def get_pixel_row(y):
@@ -81,6 +90,247 @@ def get_pixel_row(y):
         else "%06x" % palette[pixels[x, y]]
         for x in range(64)
     )
+
+
+def get_pixel_chunk(y, start_x):
+    return "".join(
+        "------"
+        if pixels[x, y] == 0
+        else "%06x" % palette[pixels[x, y]]
+        for x in range(start_x, start_x + 8)
+    )
+
+
+def ensure_drawings_directory():
+    if DRAWINGS_DIRECTORY[1:] not in os.listdir("/"):
+        os.mkdir(DRAWINGS_DIRECTORY)
+
+
+def write_drawing(path, name):
+    gc.collect()
+    with open(path, "w") as drawing_file:
+        drawing_file.write("LMG1\n")
+        json.dump(name, drawing_file)
+        drawing_file.write("\n")
+        for y in range(32):
+            for start_x in range(0, 64, 8):
+                drawing_file.write(get_pixel_chunk(y, start_x))
+                drawing_file.write("\n")
+            gc.collect()
+
+
+def skip_legacy_drawing_header(drawing_file):
+    marker = ', "pixels": "'
+    header = ""
+    while len(header) < 256:
+        character = drawing_file.read(1)
+        if not character:
+            break
+        header += character
+        if header.endswith(marker):
+            name_data = header[: -len(marker)] + "}"
+            name = json.loads(name_data)["name"]
+            if not isinstance(name, str):
+                raise ValueError("Invalid saved drawing name")
+            return name
+    raise ValueError("Invalid saved drawing header")
+
+
+def skip_drawing_metadata(drawing_file):
+    if drawing_file.read(5) != "LMG1\n":
+        drawing_file.seek(0)
+        return skip_legacy_drawing_header(drawing_file), False
+    drawing_file.seek(0)
+    drawing_file.readline()
+    name = json.loads(drawing_file.readline())
+    if not isinstance(name, str):
+        raise ValueError("Invalid saved drawing name")
+    return name, True
+
+
+def read_drawing_name(path):
+    with open(path, "r") as drawing_file:
+        name, _ = skip_drawing_metadata(drawing_file)
+    if not isinstance(name, str):
+        raise ValueError("Invalid saved drawing name")
+    return name
+
+
+def read_drawing_pixels(path):
+    global next_color_index
+    gc.collect()
+    with open(path, "r") as drawing_file:
+        name, has_chunk_newlines = skip_drawing_metadata(drawing_file)
+        drawing_colors = set()
+        for chunk_number in range(32 * 8):
+            chunk = drawing_file.read(48)
+            if len(chunk) != 48:
+                raise ValueError("Invalid saved drawing pixels")
+            if has_chunk_newlines and drawing_file.readline() != "\n":
+                raise ValueError("Invalid saved drawing pixels")
+            for offset in range(0, 48, 6):
+                color = chunk[offset : offset + 6]
+                if color != "------":
+                    if any(
+                        character not in "0123456789abcdefABCDEF"
+                        for character in color
+                    ):
+                        raise ValueError("Invalid saved drawing color")
+                    drawing_colors.add(int(color, 16))
+                    if len(drawing_colors) > 255:
+                        raise ValueError("Saved drawing has too many colors")
+            if chunk_number % 8 == 7:
+                gc.collect()
+        trailer = drawing_file.read(2 if not has_chunk_newlines else 1)
+        if trailer != ('"}' if not has_chunk_newlines else ""):
+            raise ValueError("Invalid saved drawing length")
+        if drawing_file.read(1):
+            raise ValueError("Invalid saved drawing length")
+
+    gc.collect()
+    color_indices.clear()
+    next_color_index = 1
+    palette[0] = 0x000000
+    with open(path, "r") as drawing_file:
+        _, has_chunk_newlines = skip_drawing_metadata(drawing_file)
+        for y in range(32):
+            for chunk_number in range(8):
+                chunk = drawing_file.read(48)
+                if has_chunk_newlines:
+                    drawing_file.readline()
+                start_x = chunk_number * 8
+                for pixel_number in range(8):
+                    color_text = chunk[pixel_number * 6 : pixel_number * 6 + 6]
+                    x = start_x + pixel_number
+                    if color_text == "------":
+                        pixels[x, y] = 0
+                    else:
+                        color = int(color_text, 16)
+                        color_index = color_indices.get(color)
+                        if color_index is None:
+                            color_index = next_color_index
+                            color_indices[color] = color_index
+                            palette[color_index] = color
+                            next_color_index += 1
+                        pixels[x, y] = color_index
+            gc.collect()
+    record_drawing_replaced()
+    return name
+
+
+def stream_drawing_pixels(path):
+    with open(path, "r") as drawing_file:
+        _, has_chunk_newlines = skip_drawing_metadata(drawing_file)
+        for _ in range(32 * 8):
+            yield drawing_file.read(48)
+            if has_chunk_newlines:
+                drawing_file.readline()
+
+
+def record_pixel_change(x, y, color):
+    global pixel_version
+    pixel_version += 1
+    pixel_updates.append((pixel_version, x, y, color))
+    if len(pixel_updates) > PIXEL_UPDATE_HISTORY:
+        del pixel_updates[0]
+
+
+def record_drawing_replaced():
+    global pixel_version
+    pixel_version += PIXEL_UPDATE_HISTORY + 2
+    pixel_updates.clear()
+    pixel_updates.append((pixel_version, 0, 0, None))
+
+
+def has_lit_pixels():
+    for y in range(32):
+        for x in range(64):
+            if pixels[x, y] != 0:
+                return True
+    return False
+
+
+def clear_drawing():
+    global next_color_index
+    had_pixels = has_lit_pixels()
+    for y in range(32):
+        for x in range(64):
+            pixels[x, y] = 0
+    color_indices.clear()
+    next_color_index = 1
+    palette[0] = 0x000000
+    if had_pixels:
+        record_drawing_replaced()
+
+
+def load_autosave():
+    global drawing_storage_available
+    ensure_drawings_directory()
+    drawing_storage_available = True
+    if "current.json" in os.listdir(DRAWINGS_DIRECTORY):
+        read_drawing_pixels(AUTOSAVE_PATH)
+
+
+def initialize_drawing_storage():
+    try:
+        load_autosave()
+    except (OSError, ValueError) as exc:
+        print(
+            "Drawing storage is unavailable; continuing without persistence:",
+            exc,
+        )
+
+
+def save_autosave():
+    write_drawing(AUTOSAVE_PATH, "Current drawing")
+
+
+def save_autosave_if_due():
+    global drawing_dirty, drawing_storage_available
+    if (
+        drawing_storage_available
+        and drawing_dirty
+        and time.monotonic() - last_drawing_change >= AUTOSAVE_DELAY
+    ):
+        try:
+            save_autosave()
+        except OSError as exc:
+            print("Could not autosave drawing:", exc)
+            drawing_storage_available = False
+            return
+        drawing_dirty = False
+        print("Autosaved current drawing.")
+
+
+def get_next_drawing_id():
+    existing_files = os.listdir(DRAWINGS_DIRECTORY)
+    number = 1
+    while "drawing-%d.json" % number in existing_files:
+        number += 1
+    return "drawing-%d" % number
+
+
+def save_named_drawing(name):
+    drawing_id = get_next_drawing_id()
+    write_drawing(DRAWINGS_DIRECTORY + "/" + drawing_id + ".json", name)
+    return drawing_id
+
+
+def list_drawings():
+    drawings = []
+    for filename in os.listdir(DRAWINGS_DIRECTORY):
+        if filename.startswith("drawing-") and filename.endswith(".json"):
+            drawing_id = filename[:-5]
+            drawings.append(
+                {
+                    "id": drawing_id,
+                    "name": read_drawing_name(
+                        DRAWINGS_DIRECTORY + "/" + filename
+                    ),
+                }
+            )
+    drawings.sort(key=lambda drawing: drawing["id"])
+    return drawings
 
 
 # Return a plain-text response with the requested status and headers.
@@ -114,9 +364,134 @@ def handle_app_js(request):
     )
 
 
+def handle_admin_page(request):
+    return FileResponse(
+        request,
+        filename="admin.html",
+        root_path="/",
+        content_type="text/html; charset=utf-8",
+    )
+
+
+def handle_admin(request):
+    global drawing_dirty, last_drawing_change
+    try:
+        form = request.form_data
+        password = form["password"]
+        action = form["action"]
+        if not isinstance(password, str) or not isinstance(action, str):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        return make_response(
+            request,
+            "Invalid admin request",
+            (400, "Bad Request"),
+        )
+    gc.collect()
+    if password != secrets.secrets["admin_password"]:
+        return make_response(
+            request,
+            "Incorrect admin password",
+            (401, "Unauthorized"),
+        )
+    if not drawing_storage_available:
+        return make_response(
+            request,
+            "Drawing storage is unavailable; check boot.py and filesystem access",
+            (503, "Service Unavailable"),
+        )
+
+    try:
+        if action == "list":
+            return Response(
+                request,
+                json.dumps(list_drawings()),
+                headers={"Cache-Control": "no-store"},
+                content_type="application/json",
+            )
+        if action == "show":
+            drawing_id = form.get("id", "")
+            if (
+                not isinstance(drawing_id, str)
+                or not drawing_id.startswith("drawing-")
+                or not drawing_id[8:].isdigit()
+            ):
+                return make_response(
+                    request,
+                    "Invalid drawing ID",
+                    (400, "Bad Request"),
+                )
+            drawing_path = (
+                DRAWINGS_DIRECTORY + "/" + drawing_id + ".json"
+            )
+            read_drawing_name(drawing_path)
+            return ChunkedResponse(
+                request,
+                lambda: stream_drawing_pixels(drawing_path),
+                headers={"Cache-Control": "no-store"},
+                content_type="text/plain",
+            )
+        if action == "save":
+            name = form.get("name", "")
+            if not isinstance(name, str):
+                return make_response(
+                    request,
+                    "Invalid drawing name",
+                    (400, "Bad Request"),
+                )
+            name = "".join(
+                character
+                for character in name
+                if ord(character) >= 32 and ord(character) != 127
+            ).strip()[:32]
+            if not name:
+                name = "Untitled drawing"
+            save_named_drawing(name)
+            save_autosave()
+            drawing_dirty = False
+            return make_response(request, "Drawing saved")
+        if action == "load":
+            drawing_id = form.get("id", "")
+            if (
+                not isinstance(drawing_id, str)
+                or not drawing_id.startswith("drawing-")
+                or not drawing_id[8:].isdigit()
+            ):
+                return make_response(
+                    request,
+                    "Invalid drawing ID",
+                    (400, "Bad Request"),
+                )
+            read_drawing_pixels(
+                DRAWINGS_DIRECTORY + "/" + drawing_id + ".json"
+            )
+            save_autosave()
+            drawing_dirty = False
+            return make_response(request, "Drawing recalled")
+        if action == "new":
+            if has_lit_pixels():
+                save_named_drawing("Untitled drawing")
+            clear_drawing()
+            save_autosave()
+            drawing_dirty = False
+            return make_response(request, "Started a new drawing")
+    except (OSError, ValueError) as exc:
+        print("Admin drawing operation failed:", exc)
+        return make_response(
+            request,
+            "Could not complete drawing operation",
+            (500, "Internal Server Error"),
+        )
+    return make_response(
+        request,
+        "Unknown admin action",
+        (400, "Bad Request"),
+    )
+
+
 # Apply a pixel edit submitted by the browser.
 def handle_pixel(request):
-    global next_color_index, pixel_version
+    global drawing_dirty, last_drawing_change, next_color_index
     try:
         form = request.form_data
         x = int(form["x"])
@@ -171,12 +546,9 @@ def handle_pixel(request):
         pixels[x, y] = color_index
         update_color = color
     if previous_color_index != pixels[x, y]:
-        # Log actual changes only; repeated clicks on the same result need no sync.
-        pixel_version += 1
-        pixel_updates.append((pixel_version, x, y, update_color))
-        if len(pixel_updates) > PIXEL_UPDATE_HISTORY:
-            # Older clients will receive a fresh snapshot if their changes expire.
-            del pixel_updates[0]
+        record_pixel_change(x, y, update_color)
+        drawing_dirty = True
+        last_drawing_change = time.monotonic()
     client_ip = request.client_address[0]
     if mode == "erase":
         print("%s at %s erased %dx%d" % (name, client_ip, x, y))
@@ -294,6 +666,8 @@ def create_server():
         [
             Route("/", GET, handle_home),
             Route("/app.js", GET, handle_app_js),
+            Route("/admin", GET, handle_admin_page),
+            Route("/admin", POST, handle_admin),
             Route("/pixel", POST, handle_pixel),
             Route("/pixel-row", GET, handle_pixel_row),
             Route("/pixels", GET, handle_pixel_row),
@@ -351,6 +725,7 @@ def recover_esp32():
 
 
 # Connect to Wi-Fi and start serving requests.
+initialize_drawing_storage()
 print("Connecting to WiFi...")
 connect_to_wifi()
 server = start_server()
@@ -360,6 +735,7 @@ server = start_server()
 while True:
     try:
         server.poll()
+        save_autosave_if_due()
     except OSError as exc:
         if "ESP32 not responding" in str(exc):
             server = recover_esp32()

@@ -449,6 +449,7 @@ def handle_admin(request):
             save_named_drawing(name)
             save_autosave()
             drawing_dirty = False
+            print("Saved drawing '%s'" % name)
             return make_response(request, "Drawing saved")
         if action == "load":
             drawing_id = form.get("id", "")
@@ -467,6 +468,7 @@ def handle_admin(request):
             )
             save_autosave()
             drawing_dirty = False
+            print("Recalled drawing %s" % drawing_id)
             return make_response(request, "Drawing recalled")
         if action == "new":
             if has_lit_pixels():
@@ -474,6 +476,7 @@ def handle_admin(request):
             clear_drawing()
             save_autosave()
             drawing_dirty = False
+            print("Started a new drawing")
             return make_response(request, "Started a new drawing")
     except (OSError, ValueError) as exc:
         print("Admin drawing operation failed:", exc)

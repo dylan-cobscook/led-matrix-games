@@ -43,14 +43,6 @@
       background: #191919;
     }
     .drawing h2 { margin: 0 0 10px; font-size: 16px; }
-    .drawing canvas {
-      display: block;
-      width: 100%;
-      aspect-ratio: 2 / 1;
-      image-rendering: pixelated;
-      background: #000;
-      border: 1px solid #555;
-    }
     .drawing button { margin: 10px 6px 0 0; }
   </style>
 </head>
@@ -99,30 +91,6 @@
       return text;
     }
 
-    function makePreview(pixelData) {
-      if (pixelData.length !== 64 * 32 * 6) {
-        throw new Error("The device returned an invalid drawing.");
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = 64;
-      canvas.height = 32;
-      const context = canvas.getContext("2d");
-      for (let y = 0; y < 32; y++) {
-        for (let x = 0; x < 64; x++) {
-          const offset = (y * 64 + x) * 6;
-          const color = pixelData.slice(offset, offset + 6);
-          if (color !== "------") {
-            if (!/^[0-9a-f]{6}$/i.test(color)) {
-              throw new Error("The device returned an invalid pixel color.");
-            }
-            context.fillStyle = `#${color}`;
-            context.fillRect(x, y, 1, 1);
-          }
-        }
-      }
-      return canvas;
-    }
-
     async function loadDrawings() {
       const items = JSON.parse(await adminRequest("list"));
       drawings.replaceChildren();
@@ -136,13 +104,6 @@
         const title = document.createElement("h2");
         title.textContent = item.name;
         card.append(title);
-        try {
-          card.append(makePreview(await adminRequest("show", { id: item.id })));
-        } catch (error) {
-          const previewError = document.createElement("p");
-          previewError.textContent = `Preview unavailable: ${error.message}`;
-          card.append(previewError);
-        }
         const recallButton = document.createElement("button");
         recallButton.type = "button";
         recallButton.textContent = "Recall";
